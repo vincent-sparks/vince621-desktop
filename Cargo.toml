@@ -1,0 +1,11 @@
+[package]
+name = "vince621-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = { version = "0.27.1", default-features = false, features = ["wayland", "wgpu"] }
+egui = "0.27.1"
+ehttp = { version = "0.5.0", features = ["streaming"] }
+rayon-progress = "1.0.0"
+vince621-core = { version = "0.1.0", path = "../e621/vince621-core", features = ["phf"] }
