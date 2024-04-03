@@ -24,8 +24,8 @@ struct App {
 impl App {
     fn new(ctx: &eframe::CreationContext<'_>) -> Self {
         egui_extras::install_image_loaders(&ctx.egui_ctx);
-        let tag_db = vince621_csv::tags::load_tag_database(csv::Reader::from_reader(flate2::read::GzDecoder::new(std::fs::File::open("tags.csv.gz").unwrap()))).unwrap();
-        let post_db = vince621_serialization::posts::deserialize_post_database(&mut std::io::BufReader::new(std::fs::File::open("posts.v621").unwrap())).unwrap();
+        let tag_db = vince621_serialization::deserialize_tag_database(&mut std::io::BufReader::new(std::fs::File::open("tags.v621").unwrap())).unwrap();
+        let post_db = vince621_serialization::deserialize_post_database(&mut std::io::BufReader::new(std::fs::File::open("posts.v621").unwrap())).unwrap();
         Self {
             search_query: String::new(),
             ui_state: Arc::new(Mutex::new(UiState::ShowText("Enter a search query".into()))),
