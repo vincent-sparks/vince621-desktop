@@ -17,12 +17,13 @@ vince621-csv = { version = "0.1.0", path = "../e621/vince621-csv" }
 vince621-serialization = { version = "0.1.0", path = "../e621/vince621-serialization" }
 image = { version = "0.24.7", features = ["jpeg", "png", "gif", "webp", "rayon"], default_features=false }
 paste = "1.0.14"
+directories = "5.0.1"
 
 #[profile.release]
 #lto=true
 
-[patch.crates-io]
-egui = {path="egui/crates/egui"}
-egui_extras = {path="egui/crates/egui_extras"}
-epaint.path="egui/crates/epaint"
-eframe.path="egui/crates/eframe"
+#[patch.crates-io]
+#egui = {path="egui/crates/egui"}
+#egui_extras = {path="egui/crates/egui_extras"}
+#epaint.path="egui/crates/epaint"
+#eframe.path="egui/crates/eframe"

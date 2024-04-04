@@ -1,6 +1,7 @@
 use std::{sync::{Arc, Mutex}, time::Instant};
 
-use eframe::NativeOptions;
+use directories::ProjectDirs;
+use eframe::{egui_wgpu::WgpuConfiguration, wgpu::{self, PowerPreference}, NativeOptions};
 use eframe::egui::{self, CentralPanel, Key, ProgressBar, TextEdit, TopBottomPanel};
 use egui::load::BytesPoll;
 use rayon::{iter::{IndexedParallelIterator as _, ParallelIterator as _}, slice::ParallelSliceMut as _};
@@ -22,10 +23,8 @@ struct App {
     post_db: Arc<PostDatabase>,
 }
 impl App {
-    fn new(ctx: &eframe::CreationContext<'_>) -> Self {
+    fn new(ctx: &eframe::CreationContext<'_>, tag_db: TagDatabase, post_db: PostDatabase) -> Self {
         egui_extras::install_image_loaders(&ctx.egui_ctx);
-        let tag_db = vince621_serialization::deserialize_tag_database(&mut std::io::BufReader::new(std::fs::File::open("tags.v621").unwrap())).unwrap();
-        let post_db = vince621_serialization::deserialize_post_database(&mut std::io::BufReader::new(std::fs::File::open("posts.v621").unwrap())).unwrap();
         Self {
             search_query: String::new(),
             ui_state: Arc::new(Mutex::new(UiState::ShowText("Enter a search query".into()))),
@@ -139,7 +138,29 @@ impl eframe::App for App {
 }
 
 fn main() -> Result<(), eframe::Error> {
+    let Some(proj_dirs) = ProjectDirs::from("blue", "spacestation", "vince621") else {
+        println!("Couldn't decide where to put project directories");
+        return Ok(())
+    };
+    let (tag_db, post_db) = rayon::join(
+        || vince621_serialization::deserialize_tag_database(&mut std::io::BufReader::new(std::fs::File::open(proj_dirs.cache_dir().join("tags.v621")).unwrap())).unwrap(),
+        || vince621_serialization::deserialize_post_database(&mut std::io::BufReader::new(std::fs::File::open(proj_dirs.cache_dir().join("posts.v621")).unwrap())).unwrap()
+    );
     eframe::run_native("vince621", NativeOptions {
+        wgpu_options: WgpuConfiguration {
+            // default to the low power GPU -- we're not doing anything graphically fancy
+            power_preference: wgpu::util::power_preference_from_env().unwrap_or(PowerPreference::LowPower),
+            // ensure our application has access to the full GPU limits the hardware has.
+            // by default, wgpu restricts us to a max texture size of 8192x8192, and many of the
+            // images on e621 are... larger than that.  and I'd rather not worry about carving a
+            // single image into multiple textures until I *have* to.
+            device_descriptor: Arc::new(|adapter| wgpu::DeviceDescriptor{
+                label: Some("egui wgpu device"),
+                required_features: wgpu::Features::default(),
+                required_limits: adapter.limits(),
+            }),
+            ..WgpuConfiguration::default()
+        },
         ..NativeOptions::default()
-    }, Box::new(|ctx| Box::new(App::new(ctx))))
+    }, Box::new(|ctx| Box::new(App::new(ctx, tag_db, post_db))))
 }
