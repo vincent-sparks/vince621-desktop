@@ -18,6 +18,7 @@ vince621-serialization = { version = "0.1.0", path = "../e621/vince621-serializa
 image = { version = "0.24.7", features = ["jpeg", "png", "gif", "webp", "rayon"], default_features=false }
 paste = "1.0.14"
 directories = "5.0.1"
+rand = "0.8.5"
 
 #[profile.release]
 #lto=true

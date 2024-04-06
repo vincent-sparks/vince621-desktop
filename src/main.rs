@@ -3,10 +3,9 @@ use std::{sync::{Arc, Mutex}, time::Instant};
 use directories::ProjectDirs;
 use eframe::{egui_wgpu::WgpuConfiguration, wgpu::{self, PowerPreference}, NativeOptions};
 use eframe::egui::{self, CentralPanel, Key, ProgressBar, TextEdit, TopBottomPanel};
-use egui::load::BytesPoll;
+use rand::seq::SliceRandom as _;
 use rayon::{iter::{IndexedParallelIterator as _, ParallelIterator as _}, slice::ParallelSliceMut as _};
 use vince621_core::{db::{posts::PostDatabase, tags::TagDatabase}, search::e6_posts::SortOrder};
-
 
 use paste::paste;
 
@@ -59,7 +58,7 @@ impl App {
                     results.reverse();
                 },
                 SortOrder::Random => {
-                    todo!()
+                    results.shuffle(&mut rand::thread_rng());
                 }
                 other => {
                     let posts = post_db.get_all();
@@ -125,8 +124,8 @@ impl eframe::App for App {
                         ui.image(posts[post_idx].url());
 
                         // preload the next couple images so they display faster.
-                        let next_idx = (*idx+1).min(results.len()-1);
-                        let last_idx = (*idx+5).min(results.len()-1);
+                        let next_idx = (*idx+1).min(results.len());
+                        let last_idx = (*idx+5).min(results.len());
                         for post_idx in results[next_idx..last_idx].iter() {
                             let _ = ctx.try_load_bytes(&posts[*post_idx].url());
                         }
@@ -139,7 +138,7 @@ impl eframe::App for App {
 
 fn main() -> Result<(), eframe::Error> {
     let Some(proj_dirs) = ProjectDirs::from("blue", "spacestation", "vince621") else {
-        println!("Couldn't decide where to put project directories");
+        println!("Couldn't decide where to put config directories!");
         return Ok(())
     };
     let (tag_db, post_db) = rayon::join(
@@ -151,7 +150,7 @@ fn main() -> Result<(), eframe::Error> {
             // default to the low power GPU -- we're not doing anything graphically fancy
             power_preference: wgpu::util::power_preference_from_env().unwrap_or(PowerPreference::LowPower),
             // ensure our application has access to the full GPU limits the hardware has.
-            // by default, wgpu restricts us to a max texture size of 8192x8192, and many of the
+            // by default, eframe restricts us to a max texture size of 8192x8192, and many of the
             // images on e621 are... larger than that.  and I'd rather not worry about carving a
             // single image into multiple textures until I *have* to.
             device_descriptor: Arc::new(|adapter| wgpu::DeviceDescriptor{
