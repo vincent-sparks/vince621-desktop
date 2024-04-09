@@ -1,13 +1,19 @@
 use std::{sync::{Arc, Mutex}, time::Instant};
 
 use directories::ProjectDirs;
-use eframe::{egui_wgpu::WgpuConfiguration, wgpu::{self, PowerPreference}, NativeOptions};
+use eframe::{egui_wgpu::WgpuConfiguration, wgpu::{self, PowerPreference}};
+use eframe::NativeOptions;
 use eframe::egui::{self, CentralPanel, Key, ProgressBar, TextEdit, TopBottomPanel};
+use egui::{popup_below_widget, text::LayoutJob, Align, Color32, FontSelection, Id, Layout, Rect, RichText, Sense, Vec2, WidgetText};
 use rand::seq::SliceRandom as _;
 use rayon::{iter::{IndexedParallelIterator as _, ParallelIterator as _}, slice::ParallelSliceMut as _};
-use vince621_core::{db::{posts::PostDatabase, tags::TagDatabase}, search::e6_posts::SortOrder};
+use vince621_core::{db::{posts::{ImageResolution, PostDatabase}, tags::{TagCategory, TagDatabase}}, search::e6_posts::SortOrder};
 
 use paste::paste;
+
+//mod image_loader;
+
+//use image_loader::loader::ImageLoader;
 
 enum UiState {
     ShowText(String),
@@ -89,7 +95,46 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         TopBottomPanel::top("search").show(ctx, |ui| ui.horizontal(|ui| {
             let resp = ui.add(TextEdit::singleline(&mut self.search_query));
-            if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) { //eewwwwww
+            if resp.has_focus() && !self.search_query.ends_with('}') {
+                let pos = self.search_query.rfind([' ','{']).map(|x|x+1).unwrap_or(0);
+                let last_token = &self.search_query[pos..];
+                let matches = self.tag_db.autocomplete(last_token, 20);
+
+                ui.memory_mut(|mem| mem.open_popup(Id::new("tag_autocomplete_dropdown")));
+
+                popup_below_widget(&ui, Id::new("tag_autocomplete_dropdown"), &resp, |ui| {
+                    for tag in matches {
+                        // egui does not natively support putting two text fields on the same row,
+                        // so we have to manually implement a custom widget.
+                        let color = match tag.category {
+                            TagCategory::General => Color32::from_rgb(0xb4,0xc7,0xd9),
+                            TagCategory::Artist => Color32::from_rgb(0xf2,0xac,0x08),
+                            TagCategory::Copyright => Color32::from_rgb(0xdd,0x00,0xdd),
+                            TagCategory::Character => Color32::from_rgb(0x00,0xaa,0x00),
+                            TagCategory::Species => Color32::from_rgb(0xed,0x5d,0x1f),
+                            TagCategory::Invalid => Color32::from_rgb(0xff,0x3d,0x3d),
+                            TagCategory::Meta => Color32::from_rgb(0xff,0xff,0xff),
+                            TagCategory::Lore => Color32::from_rgb(0x22,0x88,0x22),
+                        };
+                        let (response, painter) = ui.allocate_painter(Vec2::new(ui.available_width(), 20.0), Sense::click());
+                        
+                        if response.hovered() {
+                            painter.rect_filled(response.rect, ui.style().visuals.menu_rounding, ui.style().visuals.extreme_bg_color);
+                        }
+
+                        let font = FontSelection::Default.resolve(ui.style());
+                        let name_galley = ui.fonts(|fonts| fonts.layout_no_wrap(tag.name.to_string(), font.clone(), color));
+
+                        let mut post_count_job = LayoutJob::simple_singleline(tag.post_count.to_string(), font, color);
+                        post_count_job.halign=Align::RIGHT;
+                        let post_count_galley = ui.fonts(|fonts| fonts.layout_job(post_count_job));
+
+                        painter.galley(response.rect.left_top(), name_galley, Color32::WHITE);
+                        painter.galley(response.rect.right_top(), post_count_galley, Color32::WHITE);
+
+                    }
+                });
+            } else if resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) { //eewwwwww
                 self.start_search();
             }
             if ui.button("Search").clicked() {
@@ -121,13 +166,13 @@ impl eframe::App for App {
                         let post_idx = results[*idx];
                         let posts = self.post_db.get_all();
                         ui.label(format!("Showing result {} of {} (id {})", *idx+1, results.len(), posts[post_idx].id));
-                        ui.image(posts[post_idx].url());
+                        ui.image(posts[post_idx].url(ImageResolution::Sample));
 
                         // preload the next couple images so they display faster.
                         let next_idx = (*idx+1).min(results.len());
                         let last_idx = (*idx+5).min(results.len());
                         for post_idx in results[next_idx..last_idx].iter() {
-                            let _ = ctx.try_load_bytes(&posts[*post_idx].url());
+                            let _ = ctx.try_load_bytes(&posts[*post_idx].url(ImageResolution::Sample));
                         }
                     }
                 },
@@ -145,6 +190,14 @@ fn main() -> Result<(), eframe::Error> {
         || vince621_serialization::deserialize_tag_database(&mut std::io::BufReader::new(std::fs::File::open(proj_dirs.cache_dir().join("tags.v621")).unwrap())).unwrap(),
         || vince621_serialization::deserialize_post_database(&mut std::io::BufReader::new(std::fs::File::open(proj_dirs.cache_dir().join("posts.v621")).unwrap())).unwrap()
     );
+    let image_dir = proj_dirs.cache_dir().join("images");
+    match std::fs::create_dir(&image_dir) {
+        Ok(()) => {
+            println!("created cache/images/ directory");
+        }
+        Err(ref e) if e.kind() == std::io::ErrorKind::AlreadyExists => {},
+        Err(e) => panic!("Error creating cache/imgaes/ directory: {}", e),
+    }
     eframe::run_native("vince621", NativeOptions {
         wgpu_options: WgpuConfiguration {
             // default to the low power GPU -- we're not doing anything graphically fancy
@@ -161,5 +214,12 @@ fn main() -> Result<(), eframe::Error> {
             ..WgpuConfiguration::default()
         },
         ..NativeOptions::default()
-    }, Box::new(|ctx| Box::new(App::new(ctx, tag_db, post_db))))
+    }, Box::new(|ctx| {
+        /*
+        ctx.egui_ctx.data_mut(|data| {
+            data.insert_temp(Id::NULL, Arc::new(ImageLoader::new(image_dir)));
+        });
+        */
+        Box::new(App::new(ctx, tag_db, post_db))
+    }))
 }
