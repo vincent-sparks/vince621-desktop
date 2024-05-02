@@ -1,21 +1,28 @@
-use std::{sync::{Arc, Mutex}, time::Instant};
+use std::{sync::{Arc, Mutex, MutexGuard}, time::Instant};
 
 use directories::ProjectDirs;
 use eframe::{egui_wgpu::WgpuConfiguration, wgpu::{self, PowerPreference}};
 use eframe::NativeOptions;
 use eframe::egui::{self, CentralPanel, Key, ProgressBar, TextEdit, TopBottomPanel};
-use egui::{popup_below_widget, text::{CCursor, LayoutJob}, text_selection::CCursorRange, Align, Color32, FontSelection, Id, Layout, Rect, RichText, Sense, Vec2, WidgetText};
+use egui::{load::BytesPoll, popup_below_widget, text::{CCursor, LayoutJob}, text_selection::CCursorRange, Align, Color32, FontSelection, Id, Layout, Rect, RichText, Sense, Ui, Vec2, ViewportBuilder, WidgetText};
 use rand::seq::SliceRandom as _;
 use rayon::{iter::{IndexedParallelIterator as _, ParallelIterator as _}, slice::ParallelSliceMut as _};
-use vince621_core::{db::{posts::{ImageResolution, PostDatabase}, tags::{TagCategory, TagAndImplicationDatabase}}, search::e6_posts::SortOrder};
+use ruffle_core::{tag_utils::SwfMovie, PlayerBuilder};
+use vince621_core::{db::{posts::{FileExtension, ImageResolution, PostDatabase}, tags::{TagAndImplicationDatabase, TagCategory}}, search::{e6_posts::{PostKernel, SortOrder}, NestedQuery}};
 
 use byteyarn::yarn;
 
 use paste::paste;
 
-//mod image_loader;
+use egui_ruffle::{Descriptors, EguiRufflePlayer};
 
-//use image_loader::loader::ImageLoader;
+/*
+mod image_loader;
+
+use image_loader::loader::ImageLoader;
+*/
+
+mod ruffle_util;
 
 enum UiState {
     ShowText(String),
@@ -23,12 +30,22 @@ enum UiState {
     ShowPosts(Vec<usize>, usize),
 }
 
+#[derive(Default)]
+struct Settings {
+    settings_dialog_is_open: bool,
+    user_blacklist: Vec<NestedQuery<PostKernel>>,
+}
+
 struct App {
     search_query: String,
     ui_state: Arc<Mutex<UiState>>,
     tag_db: TagAndImplicationDatabase,
     post_db: Arc<PostDatabase>,
+    settings: Arc<Mutex<Settings>>,
+    ruffle_descriptors: Arc<Descriptors>,
+    flashplayer: Option<EguiRufflePlayer>,
 }
+
 impl App {
     fn new(ctx: &eframe::CreationContext<'_>, tag_db: TagAndImplicationDatabase, post_db: PostDatabase) -> Self {
         egui_extras::install_image_loaders(&ctx.egui_ctx);
@@ -37,6 +54,9 @@ impl App {
             ui_state: Arc::new(Mutex::new(UiState::ShowText("Enter a search query".into()))),
             tag_db,
             post_db: Arc::new(post_db),
+            settings: Arc::new(Mutex::new(Settings::default())),
+            flashplayer: None,
+            ruffle_descriptors: Arc::new(egui_ruffle::create_descriptors_from_render_state(ctx.wgpu_render_state.as_ref().expect("flash support requires wgpu"))),
         }
     }
 
@@ -98,10 +118,36 @@ impl App {
         });
         None
     }
+
+    fn show_settings_dialog(mut settings: MutexGuard<'_, Settings>, ui: &mut Ui) {
+        if ui.input(|i| i.viewport().close_requested()) {
+            settings.settings_dialog_is_open=false;
+        }
+    }
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        {
+            let mut settings = self.settings.lock().unwrap();
+            TopBottomPanel::top("menu").show(ctx, |ui| egui::menu::bar(ui, |ui| {
+                ui.menu_button("Settings", |ui| {
+                    if ui.button("Settings").clicked() {
+                        settings.settings_dialog_is_open=true;
+                    }
+                });
+            }));
+            if settings.settings_dialog_is_open {
+                let settings = self.settings.clone();
+                ctx.show_viewport_deferred(egui::ViewportId(Id::new("settings_dialog")),
+                ViewportBuilder::default(),
+                move |ctx, _class| {
+                    CentralPanel::default().show(ctx, |ui| {
+                        App::show_settings_dialog(settings.lock().unwrap(), ui);
+                    });
+                });
+            }
+        }
         TopBottomPanel::top("search").show(ctx, |ui| ui.horizontal(|mut ui| {
             let mut textbox = TextEdit::singleline(&mut self.search_query).show(&mut ui);
             let mut error_range = None;
@@ -163,7 +209,7 @@ impl eframe::App for App {
                         self.search_query.push_str(tag.name.as_str());
                         self.search_query.push(' ');
 
-                        let end = CCursor::new(self.search_query.len());
+                        let end = CCursor::new(self.search_query.chars().count());
 
                         textbox.state.cursor.set_char_range(Some(CCursorRange::one(end)));
                         textbox.state.store(ui.ctx(),textbox.response.id);
@@ -208,14 +254,39 @@ impl eframe::App for App {
                         if !ctx.wants_keyboard_input() {
                             if ui.input(|i| i.key_pressed(Key::ArrowLeft)) && *idx > 0 {
                                 *idx -= 1;
+                                self.flashplayer=None;
                             } else if ui.input(|i| i.key_pressed(Key::ArrowRight)) && *idx < results.len()-1 {
                                 *idx += 1;
+                                self.flashplayer=None;
                             }
                         }
                         let post_idx = results[*idx];
                         let posts = self.post_db.get_all();
-                        ui.label(format!("Showing result {} of {} (id {})", *idx+1, results.len(), posts[post_idx].id));
-                        ui.image(posts[post_idx].url(ImageResolution::Sample));
+                        let post = &posts[post_idx];
+                        ui.label(format!("Showing result {} of {} (id {})", *idx+1, results.len(), post.id));
+                        
+                        match post.file_ext {
+                            FileExtension::SWF => {
+                                if let Some(player) = self.flashplayer.as_mut() {
+                                    player.show(ui);
+                                } else {
+                                    match ctx.try_load_bytes(&post.url(ImageResolution::Full)) {
+                                        Ok(BytesPoll::Pending { .. }) => {
+                                            ui.spinner();
+                                        },
+                                        Ok(BytesPoll::Ready { bytes, .. }) => {
+                                            let movie = SwfMovie::from_data(&bytes, post.url(ImageResolution::Full), None).expect("error loading movie");
+                                            self.flashplayer = Some(EguiRufflePlayer::new(PlayerBuilder::new().with_movie(movie), frame.wgpu_render_state().expect("flashplayer requires wgpu"), self.ruffle_descriptors.clone(), (1,1)).expect("Could not create flashplayer"));
+                                        },
+                                        Err(_) => {
+                                        },
+                                    }
+                                }
+                            },
+                            _ => {
+                                ui.image(post.url(ImageResolution::Sample));
+                            },
+                        }
 
                         // preload the next couple images so they display faster.
                         let next_idx = (*idx+1).min(results.len());
@@ -231,7 +302,7 @@ impl eframe::App for App {
 }
 
 fn main() -> Result<(), eframe::Error> {
-    let Some(proj_dirs) = ProjectDirs::from("blue", "spacestation", "vince621") else {
+    let Some(proj_dirs) = ProjectDirs::from("blue", "spacestation", "Vince621") else {
         println!("Couldn't decide where to put config directories!");
         return Ok(())
     };
