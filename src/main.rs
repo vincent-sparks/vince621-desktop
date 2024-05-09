@@ -8,7 +8,8 @@ use egui::{load::BytesPoll, popup_below_widget, text::{CCursor, LayoutJob}, text
 use rand::seq::SliceRandom as _;
 use rayon::{iter::{IndexedParallelIterator as _, ParallelIterator as _}, slice::ParallelSliceMut as _};
 use ruffle_core::{tag_utils::SwfMovie, PlayerBuilder};
-use vince621_core::{db::{posts::{FileExtension, ImageResolution, PostDatabase}, tags::{TagAndImplicationDatabase, TagCategory}}, search::{e6_posts::{PostKernel, SortOrder}, NestedQuery}};
+use ruffle_frontend_utils::backends::storage::DiskStorageBackend;
+use vince621_core::{db::{posts::{FileExtension, ImageResolution, PostDatabase}, tags::{TagAndImplicationDatabase, TagCategory}}, search::{e6_posts::{parse_query_for_autocomplete, PostKernel, SortOrder}, NestedQuery}};
 
 use byteyarn::yarn;
 
@@ -44,10 +45,11 @@ struct App {
     settings: Arc<Mutex<Settings>>,
     ruffle_descriptors: Arc<Descriptors>,
     flashplayer: Option<EguiRufflePlayer>,
+    project_dirs: ProjectDirs,
 }
 
 impl App {
-    fn new(ctx: &eframe::CreationContext<'_>, tag_db: TagAndImplicationDatabase, post_db: PostDatabase) -> Self {
+    fn new(ctx: &eframe::CreationContext<'_>, tag_db: TagAndImplicationDatabase, post_db: PostDatabase, project_dirs: ProjectDirs) -> Self {
         egui_extras::install_image_loaders(&ctx.egui_ctx);
         Self {
             search_query: String::new(),
@@ -57,6 +59,7 @@ impl App {
             settings: Arc::new(Mutex::new(Settings::default())),
             flashplayer: None,
             ruffle_descriptors: Arc::new(egui_ruffle::create_descriptors_from_render_state(ctx.wgpu_render_state.as_ref().expect("flash support requires wgpu"))),
+            project_dirs,
         }
     }
 
@@ -151,7 +154,7 @@ impl eframe::App for App {
         TopBottomPanel::top("search").show(ctx, |ui| ui.horizontal(|mut ui| {
             let mut textbox = TextEdit::singleline(&mut self.search_query).show(&mut ui);
             let mut error_range = None;
-            if textbox.response.gained_focus() {//&& !self.search_query.ends_with('}') && !self.search_query.ends_with(' ') {
+            if textbox.response.has_focus() {//&& !self.search_query.ends_with('}') && !self.search_query.ends_with(' ') {
                 ui.memory_mut(|mem| mem.open_popup(Id::new("tag_autocomplete_dropdown")));
 
             } else if textbox.response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) { //eewwwwww
@@ -167,6 +170,7 @@ impl eframe::App for App {
                 textbox.response.request_focus();
             }
             popup_below_widget(&ui, Id::new("tag_autocomplete_dropdown"), &textbox.response, |ui| {
+                /*
                 let mut pos = self.search_query.rfind([' ','{']).map(|x|x+1).unwrap_or(0);
                 if pos < self.search_query.len() {
                     let c = self.search_query.as_bytes()[pos];
@@ -176,7 +180,32 @@ impl eframe::App for App {
                 }
 
                 let last_token = &self.search_query[pos..];
-                let matches = self.tag_db.autocomplete(last_token, 20);
+                */
+
+                fn ptr_diff<T>(p1: *const T, p2: *const T) -> usize {
+                    (p2 as usize) - (p1 as usize)
+                }
+
+                // this exact sorta 20-method-calls-on-the-same-line verbosity is why i left java
+                // this is what rust was supposed to save me from
+                // *siiiigh*
+                let (pos, token) = textbox
+                    .state
+                    .cursor
+                    .char_range()
+                    .map(|range|
+                              self.search_query
+                              .char_indices()
+                              .nth(range.primary.index)
+                              .map(|x| x.0)
+                              .unwrap_or(self.search_query.len()))
+                    .and_then(|pos| parse_query_for_autocomplete(&self.search_query, pos).map(|x| (ptr_diff(x.0.as_ptr(), self.search_query.as_str().as_ptr()),x)))
+                    .map(|x| (x.0, x.1.0))
+                    .unwrap_or((0, ""));
+
+
+
+                let matches = self.tag_db.autocomplete(token, 20);
 
                 for (tag, alias) in matches {
                     // egui does not natively support putting two text fields on the same row,
@@ -199,7 +228,7 @@ impl eframe::App for App {
                         None => tag.name.aliased(),
                     };
                     let (response, painter) = ui.allocate_painter(Vec2::new(ui.available_width(), 20.0), Sense::click());
-                    
+
                     if response.hovered() || response.has_focus() {
                         painter.rect_filled(response.rect, ui.style().visuals.menu_rounding, ui.style().visuals.extreme_bg_color);
                     }
@@ -232,8 +261,10 @@ impl eframe::App for App {
 
                     painter.galley(widget_rect.left_top() + Vec2::new(0.0, name_top_offset), name_galley, Color32::WHITE);
                     painter.galley(widget_rect.right_top() + Vec2::new(0.0, post_count_top_offset), post_count_galley, Color32::WHITE);
-
                 }
+
+
+
             });
         }));
 
@@ -276,7 +307,17 @@ impl eframe::App for App {
                                         },
                                         Ok(BytesPoll::Ready { bytes, .. }) => {
                                             let movie = SwfMovie::from_data(&bytes, post.url(ImageResolution::Full), None).expect("error loading movie");
-                                            self.flashplayer = Some(EguiRufflePlayer::new(PlayerBuilder::new().with_movie(movie), frame.wgpu_render_state().expect("flashplayer requires wgpu"), self.ruffle_descriptors.clone(), (1,1)).expect("Could not create flashplayer"));
+                                            let builder = PlayerBuilder::new()
+                                                .with_movie(movie)
+                                                .with_storage(Box::new(DiskStorageBackend::new(self
+                                                                                               .project_dirs
+                                                                                               .data_dir()
+                                                                                               .join("flash_saves")
+                                                                                               .join(post.id.get().to_string())
+                                                                                               )))
+                                                .with_video(ruffle_video_software::backend::SoftwareVideoBackend::new())
+                                                ;
+                                            self.flashplayer = Some(EguiRufflePlayer::new(builder, frame.wgpu_render_state().expect("flashplayer requires wgpu"), self.ruffle_descriptors.clone(), (1,1)).expect("Could not create flashplayer"));
                                         },
                                         Err(_) => {
                                         },
@@ -330,10 +371,25 @@ fn main() -> Result<(), eframe::Error> {
             // by default, eframe restricts us to a max texture size of 8192x8192, and many of the
             // images on e621 are... larger than that.  and I'd rather not worry about carving a
             // single image into multiple textures until I *have* to.
-            device_descriptor: Arc::new(|adapter| wgpu::DeviceDescriptor{
-                label: Some("egui wgpu device"),
-                required_features: wgpu::Features::default(),
-                required_limits: adapter.limits(),
+            device_descriptor: Arc::new(|adapter| {
+                let mut features = Default::default();
+                let try_features = [
+                    wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+                    wgpu::Features::SHADER_UNUSED_VERTEX_OUTPUT,
+                    wgpu::Features::TEXTURE_COMPRESSION_BC,
+                    wgpu::Features::FLOAT32_FILTERABLE,
+                ];
+
+                for feature in try_features {
+                    if adapter.features().contains(feature) {
+                        features |= feature;
+                    }
+                }
+                wgpu::DeviceDescriptor{
+                    label: Some("egui wgpu device"),
+                    required_features: features,
+                    required_limits: adapter.limits(),
+                }
             }),
             ..WgpuConfiguration::default()
         },
@@ -344,6 +400,6 @@ fn main() -> Result<(), eframe::Error> {
             data.insert_temp(Id::NULL, Arc::new(ImageLoader::new(ctx.egui_ctx.clone(), image_dir)));
         });
         */
-        Box::new(App::new(ctx, tag_db, post_db))
+        Box::new(App::new(ctx, tag_db, post_db, proj_dirs))
     }))
 }
