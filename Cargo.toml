@@ -2,33 +2,45 @@
 name = "vince621-desktop"
 version = "0.1.0"
 edition = "2021"
+license = "GPLv3+"
 
 [dependencies]
 csv = "1.3.0"
-eframe = { version = "0.27.1", default-features = false, features = ["wayland", "wgpu", "default_fonts"] }
-egui = {version="0.27.1"}
-egui_extras = { version = "0.27.1", features = ["http","image"] }
+eframe = { version = "0.27.1", default-features = false, features = ["wayland", "wgpu", "default_fonts"], path="../egui/crates/eframe" }
+egui = {version="0.27.1", path="../egui/crates/egui"}
+egui_extras = { version = "0.27.1", features = ["http","image"], path="../egui/crates/egui_extras" }
 ehttp = { version = "0.5.0", features = ["streaming"] }
 flate2 = { version = "1.0.28", features = ["zlib-ng"] }
 rayon = "1.10.0"
 rayon-progress = "1.0.0"
 vince621-core = { version = "0.1.0", path = "../e621/vince621-core", features = [] }
-vince621-csv = { version = "0.1.0", path = "../e621/vince621-csv" }
+vince621-csv = { version = "0.1.0", path = "../e621/vince621-csv", features = ["phf"] }
 vince621-serialization = { version = "0.1.0", path = "../e621/vince621-serialization" }
-image = { version = "0.24.7", features = ["jpeg", "png", "gif", "webp", "rayon"], default_features=false }
+image = { version = "0.24.7", features = ["jpeg", "png", "gif", "webp", "rayon"], default-features=false }
 paste = "1.0.14"
 directories = "5.0.1"
 rand = "0.8.5"
-#hyper-util = { version = "0.1.3", features = ["client-legacy", "http2"] }
-#hyper-tls = { version = "0.6.0", features = ["alpn"] }
-#hyper = "1.2.0"
+egui_ruffle = { version = "0.1.0", path = "../egui_ruffle" }
+hyper-util = { version = "0.1.3", features = ["client-legacy", "http2"] }
+hyper-tls = { version = "0.6.0", features = ["alpn"] }
+hyper = "1.2.0"
+tokio = "1.37.0"
 byteyarn = "0.4.1"
+ruffle_core = { version = "0.1.0", path = "../egui_ruffle/ruffle/core" }
+sqlite = "0.36.0"
+tracing = "0.1.40"
+ruffle_video_software = { version = "0.1.0", path = "../egui_ruffle/ruffle/video/software" }
+http-body-util = "0.1.1"
+#fifo-bufread = { version = "0.1.0", path = "../fifo-bufread" }
+#bytes = "1.6.0"
+#egui-video = { version = "0.6.0", path = "egui-video", features = ["from_bytes"] }
 
 #[profile.release]
 #lto=true
 
-#[patch.crates-io]
-#egui = {path="egui/crates/egui"}
-#egui_extras = {path="egui/crates/egui_extras"}
-#epaint.path="egui/crates/epaint"
-#eframe.path="egui/crates/eframe"
+[patch.crates-io]
+egui = {path="../egui/crates/egui"}
+egui_extras = {path="../egui/crates/egui_extras"}
+egui-wgpu = {path="../egui/crates/egui-wgpu"}
+epaint.path="../egui/crates/epaint"
+eframe.path="../egui/crates/eframe"
