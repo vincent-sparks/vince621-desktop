@@ -1,3 +1,4 @@
+#![feature(strict_provenance)]
 use std::{sync::{Arc, Mutex, MutexGuard}, time::Instant};
 
 use directories::ProjectDirs;
@@ -5,10 +6,12 @@ use eframe::{egui_wgpu::WgpuConfiguration, wgpu::{self, PowerPreference}};
 use eframe::NativeOptions;
 use eframe::egui::{self, CentralPanel, Key, ProgressBar, TextEdit, TopBottomPanel};
 use egui::{load::BytesPoll, popup_below_widget, text::{CCursor, LayoutJob}, text_selection::CCursorRange, Align, Color32, FontSelection, Id, Layout, Rect, RichText, Sense, Ui, Vec2, ViewportBuilder, WidgetText};
+use http_body_util::Empty;
+use hyper_tls::HttpsConnector;
+use hyper_util::client::legacy::connect::HttpConnector;
 use rand::seq::SliceRandom as _;
 use rayon::{iter::{IndexedParallelIterator as _, ParallelIterator as _}, slice::ParallelSliceMut as _};
 use ruffle_core::{tag_utils::SwfMovie, PlayerBuilder};
-use ruffle_frontend_utils::backends::storage::DiskStorageBackend;
 use vince621_core::{db::{posts::{FileExtension, ImageResolution, PostDatabase}, tags::{TagAndImplicationDatabase, TagCategory}}, search::{e6_posts::{parse_query_for_autocomplete, PostKernel, SortOrder}, NestedQuery}};
 
 use byteyarn::yarn;
@@ -24,6 +27,14 @@ use image_loader::loader::ImageLoader;
 */
 
 mod ruffle_util;
+use ruffle_util::storage::DiskStorageBackend;
+
+mod autocomplete;
+use autocomplete::Autocompleter;
+
+mod db_download;
+
+type Client = hyper_util::client::legacy::Client<HttpsConnector<HttpConnector>,Empty<&'static [u8]>>;
 
 enum UiState {
     ShowText(String),
@@ -40,19 +51,22 @@ struct Settings {
 struct App {
     search_query: String,
     ui_state: Arc<Mutex<UiState>>,
-    tag_db: TagAndImplicationDatabase,
+    tag_db: Arc<TagAndImplicationDatabase>,
     post_db: Arc<PostDatabase>,
     settings: Arc<Mutex<Settings>>,
     ruffle_descriptors: Arc<Descriptors>,
     flashplayer: Option<EguiRufflePlayer>,
     project_dirs: ProjectDirs,
+    autocompleter: Autocompleter,
 }
 
 impl App {
     fn new(ctx: &eframe::CreationContext<'_>, tag_db: TagAndImplicationDatabase, post_db: PostDatabase, project_dirs: ProjectDirs) -> Self {
+        let tag_db = Arc::new(tag_db);
         egui_extras::install_image_loaders(&ctx.egui_ctx);
         Self {
             search_query: String::new(),
+            autocompleter: Autocompleter::new(tag_db.clone()),
             ui_state: Arc::new(Mutex::new(UiState::ShowText("Enter a search query".into()))),
             tag_db,
             post_db: Arc::new(post_db),
@@ -66,7 +80,8 @@ impl App {
     fn start_search(&self) -> Option<(usize,usize)> {
         let state = self.ui_state.clone();
         let post_db = self.post_db.clone();
-        let (query, sort_order) = match vince621_core::search::e6_posts::parse_query_and_sort_order(&self.tag_db.tags, &self.search_query) {
+        let parse_tag_fn = |s| self.tag_db.search_wildcard(s).map(|tag| tag.id).collect::<Vec<u32>>();
+        let (query, sort_order) = match vince621_core::search::e6_posts::parse_query_and_sort_order(parse_tag_fn, &self.search_query) {
             Ok(x) => x,
             Err(e) => {
                 let (start_pos, end_pos) = e.get_range(&self.search_query);
@@ -155,117 +170,39 @@ impl eframe::App for App {
             let mut textbox = TextEdit::singleline(&mut self.search_query).show(&mut ui);
             let mut error_range = None;
             if textbox.response.has_focus() {//&& !self.search_query.ends_with('}') && !self.search_query.ends_with(' ') {
-                ui.memory_mut(|mem| mem.open_popup(Id::new("tag_autocomplete_dropdown")));
+                // TODO predicate this also on whether the text was modified and/or the cursor moved.
+                if let Some(pos) = textbox.state.cursor.char_range() {
+                    if textbox.response.changed() {
+                        if self.autocompleter.do_autocomplete(&self.search_query, pos.primary.index) {
+                            ui.memory_mut(|mem| mem.open_popup(Id::new("tag_autocomplete_dropdown")));
+                        } else {
+                            ui.memory_mut(|mem| mem.close_popup());
+                        }
+                    }
+                } else {
+                    ui.memory_mut(|mem| mem.close_popup());
+                }
 
             } else if textbox.response.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) { //eewwwwww
+                self.flashplayer=None;
                 error_range = self.start_search();
             }
             if ui.button("Search").clicked() {
+                self.flashplayer=None;
                 error_range = self.start_search();
             }
 
-            if let Some((start, end)) = error_range {
-                textbox.state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(start), CCursor::new(end))));
+            let range = if let Some((start, end)) = error_range {
+                Some(CCursorRange::two(CCursor::new(start), CCursor::new(end)))
+            } else {
+                popup_below_widget(&ui, Id::new("tag_autocomplete_dropdown"), &textbox.response, |ui| self.autocompleter.show_autocomplete_ui(&mut self.search_query, ui)).flatten()
+            };
+
+            if let Some(range) = range {
+                textbox.state.cursor.set_char_range(Some(range));
                 textbox.state.clone().store(ui.ctx(),textbox.response.id);
                 textbox.response.request_focus();
             }
-            popup_below_widget(&ui, Id::new("tag_autocomplete_dropdown"), &textbox.response, |ui| {
-                /*
-                let mut pos = self.search_query.rfind([' ','{']).map(|x|x+1).unwrap_or(0);
-                if pos < self.search_query.len() {
-                    let c = self.search_query.as_bytes()[pos];
-                    if c == b'-' || c == b'~' {
-                        pos += 1;
-                    }
-                }
-
-                let last_token = &self.search_query[pos..];
-                */
-
-                fn ptr_diff<T>(p1: *const T, p2: *const T) -> usize {
-                    (p2 as usize) - (p1 as usize)
-                }
-
-                // this exact sorta 20-method-calls-on-the-same-line verbosity is why i left java
-                // this is what rust was supposed to save me from
-                // *siiiigh*
-                let (pos, token) = textbox
-                    .state
-                    .cursor
-                    .char_range()
-                    .map(|range|
-                              self.search_query
-                              .char_indices()
-                              .nth(range.primary.index)
-                              .map(|x| x.0)
-                              .unwrap_or(self.search_query.len()))
-                    .and_then(|pos| parse_query_for_autocomplete(&self.search_query, pos).map(|x| (ptr_diff(x.0.as_ptr(), self.search_query.as_str().as_ptr()),x)))
-                    .map(|x| (x.0, x.1.0))
-                    .unwrap_or((0, ""));
-
-
-
-                let matches = self.tag_db.autocomplete(token, 20);
-
-                for (tag, alias) in matches {
-                    // egui does not natively support putting two text fields on the same row,
-                    // so we have to manually implement a custom widget.
-                    let color = match tag.category {
-                        TagCategory::General => Color32::from_rgb(0xb4,0xc7,0xd9),
-                        TagCategory::Artist => Color32::from_rgb(0xf2,0xac,0x08),
-                        TagCategory::Copyright => Color32::from_rgb(0xdd,0x00,0xdd),
-                        TagCategory::Character => Color32::from_rgb(0x00,0xaa,0x00),
-                        TagCategory::Species => Color32::from_rgb(0xed,0x5d,0x1f),
-                        TagCategory::Invalid => Color32::from_rgb(0xff,0x3d,0x3d),
-                        TagCategory::Meta => Color32::from_rgb(0xff,0xff,0xff),
-                        TagCategory::Lore => Color32::from_rgb(0x22,0x88,0x22),
-                    };
-
-                    let tag_name = match alias {
-                        Some(alias) => {
-                            yarn!("{} -> {}", alias, tag.name)
-                        },
-                        None => tag.name.aliased(),
-                    };
-                    let (response, painter) = ui.allocate_painter(Vec2::new(ui.available_width(), 20.0), Sense::click());
-
-                    if response.hovered() || response.has_focus() {
-                        painter.rect_filled(response.rect, ui.style().visuals.menu_rounding, ui.style().visuals.extreme_bg_color);
-                    }
-
-                    if response.clicked() {
-                        self.search_query.truncate(pos);
-                        self.search_query.push_str(tag.name.as_str());
-                        self.search_query.push(' ');
-
-                        let end = CCursor::new(self.search_query.chars().count());
-
-                        textbox.state.cursor.set_char_range(Some(CCursorRange::one(end)));
-                        textbox.state.store(ui.ctx(),textbox.response.id);
-                        textbox.response.request_focus();
-                        ui.memory_mut(|mem| mem.close_popup());
-                        break;
-                    }
-
-                    let font = FontSelection::Default.resolve(ui.style());
-                    let name_galley = ui.fonts(|fonts| fonts.layout_no_wrap(tag_name.to_string(), font.clone(), color));
-
-                    let mut post_count_job = LayoutJob::simple_singleline(tag.post_count.to_string(), font, color);
-                    post_count_job.halign=Align::RIGHT;
-                    let post_count_galley = ui.fonts(|fonts| fonts.layout_job(post_count_job));
-
-                    let widget_rect = response.rect.shrink2(ui.style().spacing.button_padding);
-
-                    let name_top_offset = (widget_rect.height() - name_galley.rect.height()) / 2.0;
-                    let post_count_top_offset = (widget_rect.height() - post_count_galley.rect.height()) / 2.0;
-
-                    painter.galley(widget_rect.left_top() + Vec2::new(0.0, name_top_offset), name_galley, Color32::WHITE);
-                    painter.galley(widget_rect.right_top() + Vec2::new(0.0, post_count_top_offset), post_count_galley, Color32::WHITE);
-                }
-
-
-
-            });
         }));
 
         CentralPanel::default().show(ctx, |ui| {
