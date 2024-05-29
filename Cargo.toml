@@ -25,14 +25,14 @@ hyper-util = { version = "0.1.3", features = ["client-legacy", "http2"] }
 hyper-tls = { version = "0.6.0", features = ["alpn"] }
 hyper = "1.2.0"
 tokio = "1.37.0"
-byteyarn = "0.4.1"
+byteyarn = "0.5.1"
 ruffle_core = { version = "0.1.0", path = "../egui_ruffle/ruffle/core" }
 sqlite = "0.36.0"
 tracing = "0.1.40"
 ruffle_video_software = { version = "0.1.0", path = "../egui_ruffle/ruffle/video/software" }
 http-body-util = "0.1.1"
-#fifo-bufread = { version = "0.1.0", path = "../fifo-bufread" }
-#bytes = "1.6.0"
+fifo-bufread = { version = "0.1.0", path = "../fifo-bufread" }
+crossbeam-channel = "0.5.12"
 #egui-video = { version = "0.6.0", path = "egui-video", features = ["from_bytes"] }
 
 #[profile.release]
