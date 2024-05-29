@@ -5,7 +5,7 @@ use directories::ProjectDirs;
 use eframe::{egui_wgpu::WgpuConfiguration, wgpu::{self, PowerPreference}};
 use eframe::NativeOptions;
 use eframe::egui::{self, CentralPanel, Key, ProgressBar, TextEdit, TopBottomPanel};
-use egui::{load::BytesPoll, popup_below_widget, text::{CCursor, LayoutJob}, text_selection::CCursorRange, Align, Color32, FontSelection, Id, Layout, Rect, RichText, Sense, Ui, Vec2, ViewportBuilder, WidgetText};
+use egui::{load::BytesPoll, popup_below_widget, text::{CCursor, LayoutJob}, text_edit::TextEditState, text_selection::CCursorRange, Align, Color32, FontSelection, Id, Layout, Rect, RichText, Sense, Ui, Vec2, ViewportBuilder, WidgetText};
 use http_body_util::Empty;
 use hyper_tls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -167,12 +167,15 @@ impl eframe::App for App {
             }
         }
         TopBottomPanel::top("search").show(ctx, |ui| ui.horizontal(|mut ui| {
-            let mut textbox = TextEdit::singleline(&mut self.search_query).show(&mut ui);
+            let id = ui.make_persistent_id("search box");
+            let initial_cursor_range = TextEditState::load(ui.ctx(), id).and_then(|state| state.cursor.char_range());
+            let mut textbox = TextEdit::singleline(&mut self.search_query).id(id).show(&mut ui);
             let mut error_range = None;
             if textbox.response.has_focus() {//&& !self.search_query.ends_with('}') && !self.search_query.ends_with(' ') {
                 // TODO predicate this also on whether the text was modified and/or the cursor moved.
                 if let Some(pos) = textbox.state.cursor.char_range() {
-                    if textbox.response.changed() {
+                    if textbox.response.changed() || initial_cursor_range != Some(pos) {
+                        println!("rerunning autocompleter");
                         if self.autocompleter.do_autocomplete(&self.search_query, pos.primary.index) {
                             ui.memory_mut(|mem| mem.open_popup(Id::new("tag_autocomplete_dropdown")));
                         } else {

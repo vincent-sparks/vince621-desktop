@@ -27,8 +27,13 @@ impl Autocompleter {
     pub fn do_autocomplete(&mut self, search_query: &str, char_index: usize) -> bool {
         let byte_index = search_query.char_indices().nth(char_index).map(|x| x.0).unwrap_or(search_query.len());
         if let Some((token, ancestors)) = parse_query_for_autocomplete(search_query, byte_index) {
+            let token_start_byte_offset = (token.as_ptr() as usize - search_query.as_ptr() as usize);
+            let cursor_idx_in_token = byte_index - token_start_byte_offset;
+            let (prefix, suffix) = token.split_at(cursor_idx_in_token);
             let ancestors = ancestors.into_iter().filter_map(|token| self.tag_db.get(token)).map(|x|x.id).collect::<Vec<_>>();
-            let matches = self.tag_db.autocomplete(token, MAX_AUTOCOMPLETION_COUNT, &ancestors);
+            let matches = self.tag_db.autocomplete(prefix, MAX_AUTOCOMPLETION_COUNT, |tag, alias| {
+                !ancestors.contains(&tag.id) && alias.unwrap_or(tag.name.as_str()).ends_with(suffix)
+            });
             let matches = matches.into_iter().map(|(a,b)| (a.into(), b.map(Into::into))).collect::<Vec<(NonNull<Tag>, Option<NonNull<str>>)>>();
             let range_start = ptr_diff(search_query, token);
             let token_range = range_start..range_start+token.len();
